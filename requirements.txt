@@ -1,0 +1,33 @@
+# Core framework
+streamlit>=1.28.0
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.10
+openai>=1.0.0
+langgraph>=0.0.40
+
+# Vector database
+pinecone>=5.0.0
+
+# Image processing and APIs
+requests>=2.31.0
+Pillow>=10.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Data handling
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Async support
+aiohttp>=3.9.0
+
+# Utilities
+pydantic>=2.5.0
+typing-extensions>=4.8.0
+
+# Additional dependencies for plotting and visualization
+plotly>=5.17.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
