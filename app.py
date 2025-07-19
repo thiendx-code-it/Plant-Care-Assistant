@@ -1803,17 +1803,37 @@ def show_dashboard_page(agents):
         st.success("No health alerts! All plants appear to be doing well.")
 
 def show_chat_page(vector_db):
-    """Display AI Chat Assistant page with LangGraph workflow"""
+    """Display AI Chat Assistant page with workflow options"""
     st.header("💬 AI Chat Assistant")
     st.markdown("Chat with your AI plant care expert! Upload images and ask questions for comprehensive advice.")
+    
+    # Workflow selection
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("**Choose your AI workflow:**")
+    with col2:
+        workflow_type = st.selectbox(
+            "Workflow Type",
+            ["🧠 Orchestrated (Smart)", "🔄 Traditional (LangGraph)"],
+            help="Orchestrated: AI decides which agents to use and when. Traditional: Fixed workflow sequence."
+        )
     
     # Initialize chat history in session state
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
     if 'chat_workflow' not in st.session_state:
         st.session_state.chat_workflow = PlantCareWorkflow(vector_db)
+    if 'orchestrated_workflow' not in st.session_state:
+        from orchestrated_workflow import OrchestratedWorkflow
+        st.session_state.orchestrated_workflow = OrchestratedWorkflow()
     if 'current_workflow_state' not in st.session_state:
         st.session_state.current_workflow_state = None
+    
+    # Show workflow info
+    if workflow_type.startswith("🧠"):
+        st.info("🧠 **Orchestrated Mode**: The AI will intelligently decide which agents to use based on your query and context. More efficient and adaptive!")
+    else:
+        st.info("🔄 **Traditional Mode**: Uses the original fixed workflow sequence. Comprehensive but may run unnecessary steps.")
     
     # Chat interface
     chat_container = st.container()
@@ -1841,8 +1861,43 @@ def show_chat_page(vector_db):
                         with st.expander("📚 Sources Used"):
                             sources = message['sources']
                             
+                            # Handle orchestrated workflow metadata
+                            if isinstance(sources, dict) and sources.get('workflow_type') == 'orchestrated':
+                                st.markdown("**🧠 Orchestrated Workflow Results:**")
+                                
+                                # Show intent analysis
+                                intent = sources.get('intent', 'Unknown')
+                                intent_confidence = sources.get('intent_confidence', 0)
+                                st.markdown(f"**🎯 Detected Intent:** {intent.replace('_', ' ').title()} ({intent_confidence:.1%} confidence)")
+                                
+                                # Show agents used
+                                agents_used = sources.get('agents_used', [])
+                                if agents_used:
+                                    st.markdown(f"**🤖 Agents Used:** {', '.join(agents_used)}")
+                                
+                                # Show execution summary
+                                exec_summary = sources.get('execution_summary', {})
+                                if exec_summary:
+                                    total_agents = exec_summary.get('total_agents', 0)
+                                    successful_agents = exec_summary.get('successful_agents', 0)
+                                    st.markdown(f"**📊 Execution:** {successful_agents}/{total_agents} agents successful")
+                                    
+                                    if exec_summary.get('failed_agents'):
+                                        failed = ', '.join(exec_summary['failed_agents'])
+                                        st.markdown(f"**⚠️ Failed Agents:** {failed}")
+                                    
+                                    confidence_scores = exec_summary.get('confidence_scores', {})
+                                    if confidence_scores:
+                                        avg_confidence = sum(confidence_scores.values()) / len(confidence_scores)
+                                        st.markdown(f"**🎯 Average Agent Confidence:** {avg_confidence:.1%}")
+                                
+                                # Show completeness score
+                                completeness = sources.get('completeness_score', 0)
+                                st.progress(completeness)
+                                st.caption(f"Response Completeness: {completeness:.1%}")
+                            
                             # Handle new workflow steps structure
-                            if isinstance(sources, dict) and sources.get('workflow_steps'):
+                            elif isinstance(sources, dict) and sources.get('workflow_steps'):
                                 # Show workflow steps in order
                                 st.markdown("**🔄 Analysis Workflow:**")
                                 for step in sources['workflow_steps']:
@@ -2038,11 +2093,77 @@ def show_chat_page(vector_db):
         
         st.session_state.chat_history.append(user_message)
         
-        # Process with LangGraph workflow
+        # Process with selected workflow
+        use_orchestrated = workflow_type.startswith("🧠")
         with st.spinner("🤖 AI is analyzing your request..."):
-            asyncio.run(process_chat_message(user_input, uploaded_file, location))
+            if use_orchestrated:
+                asyncio.run(process_orchestrated_message(user_input, uploaded_file, location))
+            else:
+                asyncio.run(process_chat_message(user_input, uploaded_file, location))
         
         st.rerun()
+
+async def process_orchestrated_message(user_input: str, uploaded_file, location: str):
+    """Process chat message through orchestration agent workflow"""
+    try:
+        # Prepare image data if uploaded
+        image_base64 = None
+        image_description = None
+        if uploaded_file:
+            from utils.image_utils import prepare_image_for_api
+            image_base64 = prepare_image_for_api(uploaded_file)
+            # Generate image description for better context
+            image_description = "User uploaded an image of their plant for analysis"
+        
+        # Run orchestrated workflow
+        workflow = st.session_state.orchestrated_workflow
+        result = await workflow.process_query(
+            user_query=user_input,
+            image_base64=image_base64,
+            image_description=image_description,
+            location=location
+        )
+        
+        if result.get('success'):
+            metadata = result.get('metadata', {})
+            
+            # Create assistant response
+            assistant_message = {
+                'type': 'assistant',
+                'content': result['response'],
+                'timestamp': datetime.now().isoformat(),
+                'sources': {
+                    'workflow_type': 'orchestrated',
+                    'intent': metadata.get('intent'),
+                    'intent_confidence': metadata.get('intent_confidence', 0),
+                    'agents_used': metadata.get('agents_used', []),
+                    'completeness_score': metadata.get('completeness_score', 0),
+                    'execution_summary': metadata.get('execution_summary', {})
+                },
+                'workflow_steps': [f"Agent: {agent}" for agent in metadata.get('agents_used', [])],
+                'confidence_score': metadata.get('completeness_score', 0),
+                'orchestration_metadata': metadata
+            }
+        else:
+            # Handle orchestration failure
+            assistant_message = {
+                'type': 'assistant',
+                'content': result['response'],
+                'timestamp': datetime.now().isoformat(),
+                'error': True,
+                'orchestration_error': metadata.get('error') if 'metadata' in result else 'Unknown error'
+            }
+        
+        st.session_state.chat_history.append(assistant_message)
+        
+    except Exception as e:
+        error_message = {
+            'type': 'assistant',
+            'content': f"I apologize, but I encountered an error while processing your request: {str(e)}. Please try again.",
+            'timestamp': datetime.now().isoformat(),
+            'error': True
+        }
+        st.session_state.chat_history.append(error_message)
 
 async def process_chat_message(user_input: str, uploaded_file, location: str):
     """Process chat message through LangGraph workflow"""
