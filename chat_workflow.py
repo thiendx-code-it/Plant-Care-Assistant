@@ -445,14 +445,22 @@ class PlantCareWorkflow:
                 # Prepare data for knowledge base update
                 plant_name = state.identified_plant.get("plant_name", "Not identified") if state.identified_plant else "Not identified"
                 
+                import json
+                
+                # Convert complex objects to JSON strings for Pinecone compatibility
+                sources_summary = state.sources_used.get("summary", []) if state.sources_used else []
+                sources_details = state.sources_used.get("details", {}) if state.sources_used else {}
+                
                 knowledge_entry = {
                     "plant_name": plant_name,
-                    "query": state.user_query,
-                    "response": state.final_response,
-                    "sources": state.sources_used.get("summary", []) if state.sources_used else [],
-                    "sources_details": state.sources_used.get("details", {}) if state.sources_used else {},
+                    "query": state.user_query[:500],  # Limit query length
+                    "response_preview": state.final_response[:200] + "..." if len(state.final_response) > 200 else state.final_response,
+                    "sources_summary": ", ".join(sources_summary) if sources_summary else "No sources",
+                    "sources_details": json.dumps(sources_details) if sources_details else "{}",
                     "feedback_score": state.user_feedback_score,
-                    "feedback_comments": state.feedback_comments
+                    "feedback_comments": state.feedback_comments[:200] if state.feedback_comments else "",
+                    "source": "user_feedback",
+                    "type": "validated_advice"
                 }
                 
                 # Add to knowledge base
