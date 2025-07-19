@@ -1861,15 +1861,26 @@ def show_chat_page(vector_db):
                                             
                                             elif 'sources_found' in details:  # Knowledge base
                                                 st.caption(f"   📊 Found {details['sources_found']} relevant sources")
+                                                st.caption("   🗄️ **Source: Local Vector Database**")
                                                 if details.get('preview'):
                                                     for idx, preview in enumerate(details['preview'][:2], 1):
                                                         st.caption(f"   {idx}. {preview}")
                                             
                                             elif 'results_found' in details:  # Web search
                                                 st.caption(f"   📊 Found {details['results_found']} web results")
+                                                st.caption("   🌐 **Source: Internet Search**")
                                                 if details.get('top_sources'):
                                                     for idx, source in enumerate(details['top_sources'][:2], 1):
                                                         st.caption(f"   {idx}. {source}")
+                                                
+                                                # Show search keywords if available
+                                                workflow_state = message.get('workflow_state')
+                                                if workflow_state and hasattr(workflow_state, 'web_search_keywords') and workflow_state.web_search_keywords:
+                                                    keywords_data = workflow_state.web_search_keywords
+                                                    if keywords_data.get('queries_used'):
+                                                        st.caption("   🔍 **Search Keywords Used:**")
+                                                        for idx, query in enumerate(keywords_data['queries_used'][:3], 1):
+                                                            st.caption(f"   {idx}. \"{query}\"")
                                             
                                             elif 'temperature' in details:  # Weather
                                                 st.caption(f"   🌡️ Temperature: {details['temperature']}")
@@ -1947,6 +1958,25 @@ def show_chat_page(vector_db):
                         with st.expander("🔄 Analysis Steps"):
                             for step in message['workflow_steps']:
                                 st.write(f"✅ {step}")
+                            
+                            # Show keyword analysis if available
+                            workflow_state = message.get('workflow_state')
+                            if workflow_state and hasattr(workflow_state, 'keyword_analysis') and workflow_state.keyword_analysis:
+                                keyword_data = workflow_state.keyword_analysis
+                                if keyword_data.get('extraction_success'):
+                                    st.markdown("**🔍 AI Query Analysis:**")
+                                    st.caption(f"**Original:** {keyword_data.get('original_query', 'N/A')}")
+                                    st.caption(f"**Optimized:** {keyword_data.get('optimized_query', 'N/A')}")
+                                    
+                                    if keyword_data.get('primary_keywords'):
+                                        keywords_str = ", ".join(keyword_data['primary_keywords'])
+                                        st.caption(f"**Key Terms:** {keywords_str}")
+                                    
+                                    if keyword_data.get('care_categories'):
+                                        categories_str = ", ".join(keyword_data['care_categories'])
+                                        st.caption(f"**Care Categories:** {categories_str}")
+                                else:
+                                    st.caption("⚠️ Keyword extraction failed, used fallback search")
                     
                     # Feedback buttons (only for the last assistant message)
                     if i == len(st.session_state.chat_history) - 1 and not message.get('feedback_given'):

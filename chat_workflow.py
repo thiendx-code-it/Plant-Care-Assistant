@@ -12,6 +12,7 @@ from agents.weather_advisor import WeatherAdvisorAgent
 from agents.knowledge_augmenter import KnowledgeAugmenterAgent
 from utils.vector_db import VectorDBManager
 from utils.image_utils import prepare_image_for_api
+from utils.api_helpers import APIHelper
 
 
 @dataclass
@@ -28,6 +29,8 @@ class ChatState:
     knowledge_results: List[Dict[str, Any]] = None
     weather_data: Dict[str, Any] = None
     web_search_results: List[Dict[str, Any]] = None
+    keyword_analysis: Dict[str, Any] = None
+    web_search_keywords: Dict[str, Any] = None
     
     # Output data
     final_response: str = ""
@@ -77,15 +80,8 @@ class PlantCareWorkflow:
         # Plant identification -> Knowledge search
         workflow.add_edge("identify_plant", "search_knowledge")
         
-        # Knowledge search -> Weather (if knowledge found) or Web search (if not)
-        workflow.add_conditional_edges(
-            "search_knowledge",
-            self._should_web_search,
-            {
-                "web_search": "web_search",
-                "weather": "get_weather"
-            }
-        )
+        # Knowledge search -> Always perform web search
+        workflow.add_edge("search_knowledge", "web_search")
         
         # Web search -> Weather
         workflow.add_edge("web_search", "get_weather")
@@ -140,15 +136,79 @@ class PlantCareWorkflow:
         return state
     
     async def _search_knowledge_node(self, state: ChatState) -> ChatState:
-        """Node to search the knowledge base."""
-        state.current_step = "Searching knowledge base..."
+        """Node to search the knowledge base with LLM-enhanced keyword extraction."""
+        state.current_step = "Analyzing query and extracting search keywords..."
         
         try:
             plant_name = state.identified_plant.get("plant_name", "Unknown") if state.identified_plant else "Unknown"
             
-            # Search for relevant information
-            search_query = f"{plant_name} {state.user_query}"
-            results = self.vector_db.similarity_search(search_query, k=5)
+            # Step 1: Use LLM to extract optimized search keywords
+            state.current_step = "Extracting search keywords with AI..."
+            keyword_result = await APIHelper.extract_search_keywords(state.user_query, plant_name)
+            
+            if keyword_result.get("success"):
+                keywords_data = keyword_result["data"]
+                optimized_query = keywords_data.get("optimized_query", f"{plant_name} {state.user_query}")
+                primary_keywords = keywords_data.get("primary_keywords", [])
+                care_categories = keywords_data.get("care_categories", [])
+                
+                # Check if AI detected a plant name in the query when identification failed
+                detected_plant_name = keywords_data.get("detected_plant_name")
+                if plant_name == "Unknown" and detected_plant_name:
+                    plant_name = detected_plant_name
+                    # Update the optimized query with the detected plant name
+                    optimized_query = keywords_data.get("optimized_query", f"{plant_name} {state.user_query}")
+                    print(f"DEBUG - Detected plant name from query: {detected_plant_name}")
+                
+                # Store keyword analysis for debugging/display
+                state.keyword_analysis = {
+                    "original_query": state.user_query,
+                    "optimized_query": optimized_query,
+                    "primary_keywords": primary_keywords,
+                    "care_categories": care_categories,
+                    "extraction_success": True,
+                    "detected_plant_name": detected_plant_name
+                }
+                
+                print(f"DEBUG - Keyword extraction successful:")
+                print(f"  Original: {state.user_query}")
+                print(f"  Optimized: {optimized_query}")
+                print(f"  Keywords: {primary_keywords}")
+                print(f"  Categories: {care_categories}")
+            else:
+                # Fallback to simple query construction
+                optimized_query = f"{plant_name} {state.user_query}"
+                state.keyword_analysis = {
+                    "original_query": state.user_query,
+                    "optimized_query": optimized_query,
+                    "extraction_success": False,
+                    "error": keyword_result.get("error", "Unknown error")
+                }
+                print(f"DEBUG - Keyword extraction failed, using fallback: {optimized_query}")
+            
+            # Step 2: Search knowledge base with optimized query
+            state.current_step = "Searching knowledge base with optimized keywords..."
+            results = self.vector_db.similarity_search(optimized_query, k=5)
+            
+            # If primary search yields few results, try additional searches with individual keywords
+            if len(results) < 3 and state.keyword_analysis.get("extraction_success"):
+                additional_results = []
+                for keyword in primary_keywords[:2]:  # Try top 2 keywords
+                    if keyword.lower() not in optimized_query.lower():
+                        keyword_results = self.vector_db.similarity_search(f"{plant_name} {keyword}", k=2)
+                        additional_results.extend(keyword_results)
+                
+                # Combine and deduplicate results
+                all_results = list(results) + additional_results
+                seen_content = set()
+                results = []
+                for doc in all_results:
+                    content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
+                    if content not in seen_content:
+                        seen_content.add(content)
+                        results.append(doc)
+                        if len(results) >= 5:  # Limit to 5 total results
+                            break
             
             # Convert Document objects to dictionaries for easier handling
             knowledge_results = []
@@ -164,20 +224,21 @@ class PlantCareWorkflow:
                     content = str(doc)
                     metadata = {}
                 
+                # Enhance metadata to distinguish vector DB sources
+                enhanced_metadata = metadata.copy()
+                enhanced_metadata["source_type"] = "vector_database"
+                enhanced_metadata["retrieval_method"] = "similarity_search"
+                
                 knowledge_results.append({
                     "content": content,
-                    "metadata": metadata,
+                    "metadata": enhanced_metadata,
                     "score": 0.8  # Default score since similarity_search doesn't return scores
                 })
             
             state.knowledge_results = knowledge_results
             
-            # Determine if we have sufficient knowledge
-            if not results or len(results) == 0:
-                state.needs_web_search = True
-            else:
-                # If we have results, assume they are relevant enough
-                state.needs_web_search = len(results) < 2  # Need at least 2 relevant documents
+            # Web search will always be performed for comprehensive results
+            state.needs_web_search = True
                 
         except Exception as e:
             state.error_message = f"Error searching knowledge base: {str(e)}"
@@ -212,22 +273,65 @@ class PlantCareWorkflow:
         return state
     
     async def _web_search_node(self, state: ChatState) -> ChatState:
-        """Node to perform web search when knowledge base is insufficient."""
-        state.current_step = "Searching the web for additional information..."
+        """Node to perform web search for comprehensive information gathering."""
+        state.current_step = "Searching the web for comprehensive information..."
         
         try:
             plant_name = state.identified_plant.get("plant_name", "Unknown") if state.identified_plant else "Unknown"
             
+            # Use detected plant name from keyword analysis if available and original was Unknown
+            if plant_name == "Unknown" and state.keyword_analysis and state.keyword_analysis.get("detected_plant_name"):
+                plant_name = state.keyword_analysis["detected_plant_name"]
+                print(f"DEBUG - Using detected plant name for web search: {plant_name}")
+            
             input_data = {
                 "plant_name": plant_name,
-                "search_topic": state.user_query
+                "specific_query": state.user_query
             }
             
             result = await self.knowledge_augmenter.execute(input_data)
             
             if result.get("success"):
-                state.web_search_results = result["data"].get("search_results", [])
+                # Extract sources and search queries from the knowledge augmenter result
+                sources = result["data"].get("sources", [])
+                search_queries = []
+                
+                # Extract search queries from sources
+                for source in sources:
+                    query = source.get("query", "")
+                    if query and query not in search_queries:
+                        search_queries.append(query)
+                
+                # Store search keywords for display
+                state.web_search_keywords = {
+                    "queries_used": search_queries,
+                    "total_queries": len(search_queries),
+                    "plant_name": plant_name,
+                    "user_query": state.user_query
+                }
+                
+                # Debug: Print the result structure
+                print(f"DEBUG - Web search result data: {result['data']}")
+                print(f"DEBUG - Sources found: {len(sources)}")
+                print(f"DEBUG - Search queries used: {search_queries}")
+                
+                # Format sources for display in UI
+                enhanced_results = []
+                for source in sources:
+                    enhanced_item = {
+                        "title": source.get("title", "No title available"),
+                        "url": source.get("url", "No URL available"),
+                        "snippet": source.get("query", "No content available"),
+                        "source_type": "internet",
+                        "search_timestamp": result["data"].get("timestamp", ""),
+                        "search_query": source.get("query", "")
+                    }
+                    enhanced_results.append(enhanced_item)
+                
+                state.web_search_results = enhanced_results
+                print(f"DEBUG - Enhanced results: {len(enhanced_results)} items")
             else:
+                print(f"DEBUG - Web search failed: {result}")
                 state.web_search_results = []
                 
         except Exception as e:
@@ -242,6 +346,11 @@ class PlantCareWorkflow:
         
         try:
             plant_name = state.identified_plant.get("plant_name", "Unknown") if state.identified_plant else "Unknown"
+            
+            # Use detected plant name from keyword analysis if available and original was Unknown
+            if plant_name == "Unknown" and state.keyword_analysis and state.keyword_analysis.get("detected_plant_name"):
+                plant_name = state.keyword_analysis["detected_plant_name"]
+                print(f"DEBUG - Using detected plant name for response generation: {plant_name}")
             
             # Extract health issues from plant identification if available
             health_issues = []
@@ -262,7 +371,7 @@ class PlantCareWorkflow:
                             "probability": pest.get("probability", 0.0)
                         })
             
-            # Prepare comprehensive input for care advisor
+            # Prepare comprehensive input for care advisor with both vector DB and web sources
             input_data = {
                 "plant_name": plant_name,
                 "specific_query": state.user_query,
@@ -315,7 +424,9 @@ class PlantCareWorkflow:
                             "count": len(state.knowledge_results) if state.knowledge_results else 0,
                             "sources": [{
                                 "content_preview": (item.get('content', str(item))[:150] + "...") if hasattr(item, 'get') or isinstance(item, dict) else str(item)[:150] + "...",
-                                "metadata": item.get('metadata', {}) if hasattr(item, 'get') or isinstance(item, dict) else {}
+                                "metadata": item.get('metadata', {}) if hasattr(item, 'get') or isinstance(item, dict) else {},
+                                "source_type": item.get('metadata', {}).get('source', 'unknown') if hasattr(item, 'get') or isinstance(item, dict) else 'unknown',
+                                "document_type": item.get('metadata', {}).get('type', 'unknown') if hasattr(item, 'get') or isinstance(item, dict) else 'unknown'
                             } for item in (state.knowledge_results[:3] if state.knowledge_results else [])]
                         },
                         "web_search": {
@@ -412,9 +523,9 @@ class PlantCareWorkflow:
                     plant_name = sources["details"]["plant_identification"]["result"]["plant_name"]
                     sources["summary"].append(f"🌱 Plant ID: {plant_name}")
                 if sources["details"]["knowledge_base"]["used"]:
-                    sources["summary"].append(f"📚 Knowledge Base ({sources['details']['knowledge_base']['count']} sources)")
+                    sources["summary"].append(f"📚 Knowledge Base - Local Vector DB ({sources['details']['knowledge_base']['count']} sources)")
                 if sources["details"]["web_search"]["used"]:
-                    sources["summary"].append(f"🌐 Web Search ({sources['details']['web_search']['count']} results)")
+                    sources["summary"].append(f"🌐 Web Search - Internet ({sources['details']['web_search']['count']} results)")
                 if sources["details"]["weather_analysis"]["used"]:
                     sources["summary"].append("🌤️ Weather Data")
                 if sources["details"]["image_analysis"]["used"]:
@@ -474,9 +585,7 @@ class PlantCareWorkflow:
         
         return state
     
-    def _should_web_search(self, state: ChatState) -> str:
-        """Conditional edge function to determine if web search is needed."""
-        return "web_search" if state.needs_web_search else "weather"
+    # Removed _should_web_search function as web search is now always performed
     
     def _should_update_knowledge(self, state: ChatState) -> str:
         """Conditional edge function to determine if knowledge should be updated."""
@@ -503,6 +612,8 @@ class PlantCareWorkflow:
                     needs_web_search=result.get('needs_web_search', False),
                     web_search_results=result.get('web_search_results', []),
                     weather_data=result.get('weather_data', {}),
+                    keyword_analysis=result.get('keyword_analysis', {}),
+                    web_search_keywords=result.get('web_search_keywords', {}),
                     final_response=result.get('final_response', ''),
                     sources_used=result.get('sources_used', {}),
                     user_feedback_score=result.get('user_feedback_score'),
