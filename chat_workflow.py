@@ -334,9 +334,9 @@ class PlantCareWorkflow:
                             "step_name": "🌤️ Weather Analysis",
                             "status": "completed" if state.weather_data and "error" not in state.weather_data else "failed" if state.weather_data else "skipped",
                             "data": {
-                                "temperature": f"{state.weather_data.get('main', {}).get('temp', 'N/A')}°C" if state.weather_data and "error" not in state.weather_data else None,
-                                "humidity": f"{state.weather_data.get('main', {}).get('humidity', 'N/A')}%" if state.weather_data and "error" not in state.weather_data else None,
-                                "description": state.weather_data.get('weather', [{}])[0].get('description', 'N/A') if state.weather_data and "error" not in state.weather_data else None
+                                "temperature": f"{state.weather_data.get('current_weather', {}).get('temperature', 'N/A')}°C" if state.weather_data and "error" not in state.weather_data else None,
+                                "humidity": f"{state.weather_data.get('current_weather', {}).get('humidity', 'N/A')}%" if state.weather_data and "error" not in state.weather_data else None,
+                                "description": state.weather_data.get('current_weather', {}).get('description', 'N/A') if state.weather_data and "error" not in state.weather_data else None
                             } if state.weather_data and "error" not in state.weather_data else None
                         },
                         "image_analysis": {

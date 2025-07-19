@@ -350,9 +350,11 @@ Provide a concise but thorough visual assessment that will help inform care reco
             return "No current weather data available."
         
         try:
-            temp = weather_data.get("main", {}).get("temp", "N/A")
-            humidity = weather_data.get("main", {}).get("humidity", "N/A")
-            weather_desc = weather_data.get("weather", [{}])[0].get("description", "N/A")
+            # Access weather data from the formatted structure returned by weather advisor
+            current_weather = weather_data.get("current_weather", {})
+            temp = current_weather.get("temperature", "N/A")
+            humidity = current_weather.get("humidity", "N/A")
+            weather_desc = current_weather.get("description", "N/A")
             
             return f"Current weather: {weather_desc}, Temperature: {temp}°C, Humidity: {humidity}%"
         except Exception:
